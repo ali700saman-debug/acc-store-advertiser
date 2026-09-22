@@ -130,6 +130,16 @@ const MIGRATIONS = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_groups_sender ON groups (sender_kind, enabled);');
     },
   },
+  {
+    // Records a PERMANENT permission failure so the scheduler stops retrying
+    // a group Telegram will keep refusing. Additive; no data is touched.
+    id: '003_permission_block',
+    up: (db) => {
+      const columns = new Set(db.prepare('PRAGMA table_info(groups)').all().map((c) => c.name));
+      if (!columns.has('blocked_reason')) db.exec('ALTER TABLE groups ADD COLUMN blocked_reason TEXT;');
+      if (!columns.has('blocked_at')) db.exec('ALTER TABLE groups ADD COLUMN blocked_at TEXT;');
+    },
+  },
 ];
 
 /**

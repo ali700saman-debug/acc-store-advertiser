@@ -88,7 +88,7 @@ test('15. existing campaigns, groups, settings and history survive the migration
 
   // Only the new migration ran, and the file was reused.
   assert.equal(upgraded.existed, true);
-  assert.deepEqual(upgraded.appliedMigrations, ['002_mtproto_user_sender']);
+  assert.deepEqual(upgraded.appliedMigrations, ['002_mtproto_user_sender', '003_permission_block']);
   assert.equal(integrityCheck(upgraded.db).ok, true);
 
   // Campaigns intact, including media file_id and button.
@@ -130,7 +130,7 @@ test('15b. migrating twice is a no-op', (t) => {
   buildLegacyDatabase(dbPath);
 
   const first = openDatabase({ dbPath });
-  assert.deepEqual(first.appliedMigrations, ['002_mtproto_user_sender']);
+  assert.deepEqual(first.appliedMigrations, ['002_mtproto_user_sender', '003_permission_block']);
   closeDatabase(first.db);
 
   const second = openDatabase({ dbPath });
@@ -285,6 +285,8 @@ test('15c. a mixed deployment routes each group to its own sender', async (t) =>
   await ctx.userSender.connect();
 
   ctx.q.registerUserGroup({ chat_id: -1003333333333, title: 'Imported Group', type: 'supergroup', peer_type: 'channel', access_hash: '99887766554433221' });
+  // Imports start disabled by design; this test is about routing, so enable it.
+  ctx.q.updateGroup(-1003333333333, { enabled: 1 });
   ctx.q.updateGroup(-1002222222222, { enabled: 1 });
   ensureDefaultCampaign(ctx.q, config);
 

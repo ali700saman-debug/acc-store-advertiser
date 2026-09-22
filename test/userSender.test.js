@@ -312,7 +312,9 @@ test('6. selecting a group adds it to the allowlist with its peer data', async (
   assert.equal(group.sender_kind, 'user');
   assert.equal(group.peer_type, 'channel');
   assert.equal(group.access_hash, '1111111111111111111');
-  assert.equal(group.enabled, 1);
+  // Safe default: an imported group is registered DISABLED so a bulk import
+  // can never start advertising on its own.
+  assert.equal(group.enabled, 0);
   assert.ok(group.next_send_at);
   assert.equal(h.q.getGroup(-1001000000002), null, 'the unticked group was NOT added');
 });
@@ -333,6 +335,9 @@ test('7 & 14. unselected groups receive nothing, even though the account is in t
   await h.bot.feedCallback(callbackQuery('sndr:imp:0'));
   await h.bot.feedCallback(callbackQuery('sndr:t:0:0'));
   await h.bot.feedCallback(callbackQuery('sndr:add'));
+
+  // Enable only the imported group; the other two stay off the allowlist.
+  h.q.updateGroup(-1001000000001, { enabled: 1 });
 
   const campaign = h.q.listCampaigns()[0];
   await h.bot.feedCallback(callbackQuery(`n:go:${campaign.id}:all`));

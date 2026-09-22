@@ -3,7 +3,22 @@
 /** Shared helpers for every admin handler. */
 
 const { esc, truncate } = require('../utils/html');
+const { safeButtonLabel } = require('../utils/text');
 const { button, backRow, markup } = require('../utils/keyboard');
+
+/**
+ * Callback query ids already acknowledged.
+ *
+ * Telegram allows exactly one answerCallbackQuery per query, and the query
+ * expires after a few seconds. Answering twice returns
+ * "query ID is invalid", and answering late returns "query is too old" —
+ * neither is an error worth surfacing, so both are swallowed and the id is
+ * remembered so a second attempt is skipped entirely.
+ */
+const answeredQueries = new Map();
+const ANSWERED_HISTORY = 500;
+
+const EXPIRED_QUERY = /query is too old|query ID is invalid|QUERY_ID_INVALID/i;
 
 /** Authentication is by numeric Telegram user id only — never by username. */
 function isAdmin(userId, config) {
@@ -34,13 +49,40 @@ async function renderPanel(ctx, { chatId, messageId, text, keyboard }) {
   return ctx.bot.sendMessage(chatId, text, options);
 }
 
+/**
+ * Acknowledges a callback query at most once. Never throws.
+ *
+ * Returns true when this call actually delivered the acknowledgement.
+ */
 async function answer(ctx, callbackQueryId, text = '', showAlert = false) {
-  if (!callbackQueryId) return;
+  if (!callbackQueryId) return false;
+  if (answeredQueries.has(callbackQueryId)) return false;
+
+  answeredQueries.set(callbackQueryId, Date.now());
+  // Keep the map bounded; ids are only useful for a few seconds.
+  while (answeredQueries.size > ANSWERED_HISTORY) {
+    const oldest = answeredQueries.keys().next().value;
+    answeredQueries.delete(oldest);
+  }
+
   try {
     await ctx.bot.answerCallbackQuery(callbackQueryId, { text, show_alert: showAlert });
+    return true;
   } catch (error) {
-    ctx.logger.warn(`answerCallbackQuery failed: ${error.message}`);
+    const message = error?.message || '';
+    if (EXPIRED_QUERY.test(message)) {
+      // The spinner has already timed out on the client. Harmless.
+      ctx.logger.info('callback acknowledgement skipped (query expired)');
+      return false;
+    }
+    ctx.logger.warn(`answerCallbackQuery failed: ${message}`);
+    return false;
   }
+}
+
+/** Test/maintenance seam: forget acknowledged ids. */
+function resetAnsweredQueries() {
+  answeredQueries.clear();
 }
 
 function statusDot(enabled) {
@@ -48,12 +90,13 @@ function statusDot(enabled) {
 }
 
 function groupLabel(group) {
-  const title = truncate(group.title || String(group.chat_id), 28);
+  // Group titles are arbitrary Telegram content: always sanitize for buttons.
+  const title = safeButtonLabel(group.title || String(group.chat_id), { max: 28 });
   return `${statusDot(group.enabled)} ${title}`;
 }
 
 function campaignLabel(campaign) {
-  return `${statusDot(campaign.enabled)} ${truncate(campaign.name, 28)}`;
+  return `${statusDot(campaign.enabled)} ${safeButtonLabel(campaign.name, { max: 28, fallback: 'Untitled campaign' })}`;
 }
 
 /** Pagination for long lists so keyboards stay within Telegram limits. */
@@ -78,4 +121,7 @@ function pagerRow(pagination, makeData) {
   return row;
 }
 
-module.exports = { isAdmin, NON_ADMIN_REPLY, renderPanel, answer, statusDot, groupLabel, campaignLabel, paginate, pagerRow, esc, button, backRow };
+module.exports = {
+  isAdmin, NON_ADMIN_REPLY, renderPanel, answer, resetAnsweredQueries,
+  statusDot, groupLabel, campaignLabel, paginate, pagerRow, esc, button, backRow,
+};

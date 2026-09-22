@@ -184,6 +184,10 @@ Anyone not in this list gets a single neutral reply
 2. In the admin panel: **⚙️ Sender Account → 👥 Import My Groups**.
 3. Tick the groups and press **✅ Add Selected**.
 
+**Newly imported groups are registered DISABLED.** Importing never starts a
+broadcast. Open 👥 Groups, check each one, then press ✅ Enable when you are
+ready. Re-importing never changes a group you already enabled.
+
 ```
 👥 Import My Groups
 
@@ -216,6 +220,21 @@ messages, then send `/register_group` there. Those groups keep `sender_kind =
 
 To stop advertising in a group, use **Groups → Remove Group** (or
 `/unregister_group` for a bot-registered one).
+
+### Blocked groups
+
+If Telegram permanently refuses a group — `WRITE_FORBIDDEN` (the account may
+not post there) or `BANNED_IN_CHAT` (the account is banned) — the group is
+**blocked**: automatic sending is switched off for it, so the scheduler does
+not retry it on every tick. Nothing is deleted; its campaign, interval,
+settings and delivery history are all kept.
+
+The group panel shows the reason. Fix the permission in Telegram, press
+**🔐 Re-check Permission**, and if it succeeds the block clears — then press
+**✅ Enable** to resume. A re-check never re-enables a group on its own.
+
+A rate limit (`FLOOD_WAIT` / `SLOWMODE_WAIT`) is *not* a block: those groups
+stay enabled and simply wait.
 
 ## 4. Create your first campaign
 
@@ -540,6 +559,7 @@ acc-store-advertiser/
 │   ├── policy.js            # interval / quiet-hours / timezone resolution
 │   └── shutdown.js          # SIGTERM / SIGINT handling, disconnects both
 ├── utils/
+│   ├── text.js              # Unicode-safe labels for the Bot API
 │   ├── keyboard.js          # inline keyboards, stable callback data
 │   ├── html.js              # Telegram HTML validation, URL validation
 │   ├── time.js              # timezone-aware time and quiet-hour math
@@ -551,6 +571,8 @@ acc-store-advertiser/
     ├── scheduler.test.js
     ├── broadcaster.test.js
     ├── userSender.test.js    # MTProto connect, import, no-auto-join, secrets
+    ├── unicode.test.js       # UTF-8 safe labels (Arabic/Kurdish/Vietnamese/emoji)
+    ├── permissions.test.js   # callback timing, blocked groups, safe imports
     ├── queue.test.js         # FLOOD_WAIT, SLOWMODE_WAIT, serialisation
     ├── migration.test.js     # existing production data survives the upgrade
     └── database.test.js
@@ -567,6 +589,7 @@ acc-store-advertiser/
 | `groups` | Registered groups: chat id, title, type, username, enabled, interval, campaign, rotation, `last_send_at`, `next_send_at`, `last_message_id`, quiet hours, delete-previous, delivery problem — plus `sender_kind`, `peer_type`, `access_hash`, `peer_checked_at` |
 | `group_campaigns` | Ordered rotation list per group |
 | `ad_deliveries` | Every send attempt with a unique `idempotency_key`, status, Telegram message id and error code |
+| — | `groups` also carries `blocked_reason` / `blocked_at` for a permanently refused chat |
 | `audit_log` | Admin actions: `admin_id`, action, target, timestamp |
 | `migrations` | Applied migration ids (additive only) |
 
@@ -580,8 +603,10 @@ table and asserts none of them appears.
 
 Additive only — `ALTER TABLE ... ADD COLUMN` guarded by a `PRAGMA table_info`
 check, tracked by id in the `migrations` table. The database is never dropped or
-recreated. `002_mtproto_user_sender` adds the columns above; every existing
-group defaults to `sender_kind = 'bot'` and keeps working exactly as before.
+recreated. `002_mtproto_user_sender` adds the MTProto peer columns; every existing group
+defaults to `sender_kind = 'bot'` and keeps working exactly as before.
+`003_permission_block` adds `blocked_reason` / `blocked_at`, both defaulting to
+NULL, so no existing group is affected.
 
 ---
 
@@ -612,14 +637,43 @@ limit. Never a phone number, api hash, session or 2FA password.
 
 ---
 
+## Text safety
+
+Telegram group titles are arbitrary user content, and the Bot API rejects any
+request containing text that is not valid UTF-8:
+
+```
+400 Bad Request: inline keyboard button text must be encoded in UTF-8
+```
+
+Slicing a title with `String.slice()` cuts by UTF-16 code unit, so a cut
+landing inside an emoji leaves a lone surrogate — and because one bad label
+rejects the whole keyboard, a single group could break an entire panel.
+
+`utils/text.js` is the single sanitizer for anything shown to Telegram. It
+removes unpaired surrogates, control characters and bidi overrides, applies
+NFC normalisation, and truncates by **grapheme cluster** (via
+`Intl.Segmenter`) so emoji, flags, ZWJ families and combining marks are never
+split. Empty results fall back to `Unnamed group`.
+
+It preserves Arabic, Kurdish, Vietnamese, Spanish and emoji — including ZWNJ
+and ZWJ, which are meaningful in those scripts. It runs inside
+`utils/keyboard.js`'s `button()` and inside `escapeHtml()`, so every button
+label and every message body is covered by construction.
+
+This is **display only**: the full original title stays in the database.
+
 ## Tests
 
-125 tests covering admin authentication, group registration, the campaign
+161 tests covering admin authentication, group registration, the campaign
 editor, scheduling, duplicate prevention, rate limiting, error handling,
 persistence and clean shutdown — plus MTProto connection handling, secret
 redaction, group import, no-auto-join guarantees, `FLOOD_WAIT` / `SLOWMODE_WAIT`
 behaviour, queue serialisation, and an upgrade test against a database built at
-the previous schema version.
+the previous schema version — plus UTF-8 safety for Arabic, Kurdish,
+Vietnamese, Spanish, emoji, ZWJ sequences, lone surrogates and very long
+titles; callback acknowledgement ordering; and permanent-permission blocking
+with recovery via re-check.
 
 ```bash
 npm test

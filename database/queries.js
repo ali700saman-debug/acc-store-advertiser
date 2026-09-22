@@ -26,6 +26,7 @@ const GROUP_UPDATABLE = new Set([
   'last_message_id', 'delete_previous', 'quiet_enabled', 'quiet_start',
   'quiet_end', 'can_send', 'delivery_problem', 'last_error', 'last_error_at',
   'sender_kind', 'peer_type', 'access_hash', 'peer_checked_at',
+  'blocked_reason', 'blocked_at',
 ]);
 
 const CAMPAIGN_UPDATABLE = new Set([
@@ -132,7 +133,7 @@ function createQueries(db) {
   // ------------------------------------------------------------------ groups
   const insertGroup = db.prepare(`
     INSERT INTO groups (chat_id, title, type, username, registered_at, registered_by, enabled, next_send_at)
-    VALUES (@chat_id, @title, @type, @username, @registered_at, @registered_by, 1, @next_send_at)
+    VALUES (@chat_id, @title, @type, @username, @registered_at, @registered_by, @enabled, @next_send_at)
   `);
 
   api.getGroup = (chatId) => db.prepare('SELECT * FROM groups WHERE chat_id = ?').get(Number(chatId)) || null;
@@ -154,6 +155,8 @@ function createQueries(db) {
       username: data.username || null,
       registered_at: nowIso(),
       registered_by: data.registered_by ? Number(data.registered_by) : null,
+      // /register_group is an explicit, per-group action: enabled by default.
+      enabled: data.enabled === 0 || data.enabled === false ? 0 : 1,
       next_send_at: data.next_send_at || nowIso(),
     });
     return { created: true, group: api.getGroup(chatId) };
@@ -168,6 +171,7 @@ function createQueries(db) {
     const existing = api.getGroup(chatId);
     if (existing) {
       // Re-importing an existing group refreshes its peer data only.
+      // Peer data only: the group's enabled state is the admin's decision.
       api.updateGroup(chatId, {
         title: data.title || existing.title,
         username: data.username ?? existing.username,
@@ -185,6 +189,9 @@ function createQueries(db) {
       username: data.username || null,
       registered_at: nowIso(),
       registered_by: data.registered_by ? Number(data.registered_by) : null,
+      // Imports are bulk and one tap away, so a newly imported group starts
+      // DISABLED. The admin inspects it and enables advertising deliberately.
+      enabled: data.enabled === 1 || data.enabled === true ? 1 : 0,
       next_send_at: data.next_send_at || nowIso(),
     });
     api.updateGroup(chatId, {
@@ -268,6 +275,36 @@ function createQueries(db) {
       delivery_problem: problem ? 1 : 0,
       can_send: problem ? 0 : 1,
     });
+
+  /**
+   * Marks a group as permanently refused by Telegram and stops automatic
+   * sending to it. Nothing is deleted: history, campaign and settings stay,
+   * so a successful re-check can bring it straight back.
+   */
+  api.markGroupBlocked = (chatId, { reason, message } = {}) =>
+    api.updateGroup(chatId, {
+      enabled: 0,
+      delivery_problem: 1,
+      can_send: 0,
+      blocked_reason: reason ? String(reason) : 'BLOCKED',
+      blocked_at: nowIso(),
+      last_error: message ? String(message).slice(0, 400) : null,
+      last_error_at: nowIso(),
+    });
+
+  /** Clears a permanent block after a successful re-check. Does not enable. */
+  api.clearGroupBlock = (chatId) =>
+    api.updateGroup(chatId, {
+      blocked_reason: null,
+      blocked_at: null,
+      delivery_problem: 0,
+      can_send: 1,
+      last_error: null,
+      last_error_at: null,
+    });
+
+  api.countBlockedGroups = () =>
+    db.prepare('SELECT COUNT(*) AS n FROM groups WHERE blocked_reason IS NOT NULL').get().n;
 
   api.clearGroupError = (chatId) =>
     api.updateGroup(chatId, { last_error: null, last_error_at: null, delivery_problem: 0, can_send: 1 });
