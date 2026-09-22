@@ -1,0 +1,21 @@
+{
+  "name": "acc-store-advertiser",
+  "version": "1.0.0",
+  "description": "Private admin-controlled Telegram advertising manager for ACC STORE. Posts campaigns only to manually registered groups.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test test/*.test.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.5.0",
+    "dotenv": "^16.4.5",
+    "node-telegram-bot-api": "^0.66.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "private": true
+}
