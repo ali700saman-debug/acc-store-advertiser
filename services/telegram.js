@@ -154,6 +154,31 @@ function createTelegramService({ bot, logger = makeLogger('Telegram'), sleep = d
     );
   };
 
+  /**
+   * Sends an already-rendered plan (see services/render.js) through the BOT.
+   *
+   * This is what makes the admin preview truthful: the preview renders the
+   * plan for the USER ACCOUNT and then shows it via the bot, so the text and
+   * the absence of an inline button match the real delivery exactly.
+   */
+  service.sendPlan = async (chatId, plan) => {
+    const options = {
+      parse_mode: plan.parseMode || 'HTML',
+      ...(plan.buttons ? { reply_markup: { inline_keyboard: plan.buttons } } : {}),
+    };
+
+    if (plan.mediaType && plan.mediaFileId) {
+      const method = { photo: 'sendPhoto', video: 'sendVideo', animation: 'sendAnimation' }[plan.mediaType];
+      if (method) {
+        return service.call(() => bot[method](chatId, plan.mediaFileId, { ...options, caption: plan.text }), { label: `${method}->${chatId}` });
+      }
+    }
+    return service.call(
+      () => bot.sendMessage(chatId, plan.text, { ...options, disable_web_page_preview: true }),
+      { label: `sendPlan->${chatId}` }
+    );
+  };
+
   /** Best-effort delete of our own previous advertisement. Never throws. */
   service.deleteMessage = async (chatId, messageId) => {
     if (!messageId) return false;

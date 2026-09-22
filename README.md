@@ -1,44 +1,84 @@
 # ACC STORE Advertiser
 
-A private, admin-controlled Telegram bot that posts advertisements for your main
-ACC STORE bot into groups **you** have explicitly registered.
+A private, admin-controlled Telegram advertising manager for your main ACC
+STORE bot.
+
+Two Telegram identities, with clearly split jobs:
+
+| | Identity | Job |
+|---|---|---|
+| 🤖 | **Admin bot** (`BOT_TOKEN`) | Your private control panel: dashboard, campaigns, groups, schedules, statistics, Send Now, settings. It does **not** need to be in any advertising group. |
+| 👤 | **User account** (MTProto) | Posts the actual advertisements into groups the account has already joined. Nothing else. |
 
 This is a standalone project. It does not read, write or depend on the main ACC
 STORE bot in any way — it only links to it.
 
 ---
 
+## ⚠️ Read this before using the user account
+
+Automating a normal Telegram account to post advertisements is the pattern
+Telegram most often **limits or bans accounts for**, and bulk messaging is
+restricted under Telegram's API terms. This project is built to stay on the
+conservative side of that line:
+
+- it only posts to groups **you joined by hand**, in the official app;
+- it only posts to groups **you explicitly ticked** in the admin panel;
+- the minimum automatic interval is **60 minutes per group**;
+- every send is serialised with a **20 second gap** by default;
+- when Telegram says `FLOOD_WAIT` or `SLOWMODE_WAIT`, the wait is **obeyed
+  exactly** — there is no bypass anywhere in the code.
+
+Even so, **use a dedicated account you can afford to lose**, never your
+personal one. If the account gets limited you will see `PEER_FLOOD` in the
+admin panel; that is Telegram's anti-spam signal, and the right response is to
+slow down or stop, not to push harder.
+
+---
+
 ## Safety model
 
-The bot advertises **only** in groups on its allowlist. A group joins that list
-through exactly one path:
+Advertisements go **only** to groups on the allowlist in SQLite. Being a member
+of a group is never enough on its own. A group joins the allowlist through one
+of exactly two paths:
 
-1. You manually add the advertising bot to the Telegram group.
-2. The bot is given permission to send messages there.
-3. An admin listed in `ADMIN_IDS` sends `/register_group` inside that group.
+**Preferred — user account**
+1. You join the group yourself, in the official Telegram app, with the
+   advertising account.
+2. An admin opens ⚙️ Sender Account → 👥 Import My Groups.
+3. The admin ticks that group and presses Add Selected.
 
-The bot never discovers groups, never joins on its own, never scrapes, never
-uses a user account, and never messages a chat that is not registered. Admin
-authentication is by numeric Telegram user ID only — usernames are ignored,
-since they can be changed.
+**Legacy — bot delivery** (still supported, unchanged)
+1. You add the admin bot to the group and let it send messages.
+2. An admin sends `/register_group` inside that group.
+
+The software never discovers groups, never joins anything, never resolves an
+invite link, never scrapes, and never messages a chat that is not on the
+allowlist. There is no join/import-invite call anywhere in the sending code —
+a test asserts those API names are absent from the source, not merely unused.
+
+Admin authentication is by numeric Telegram user ID only — usernames are
+ignored, since they can be changed.
 
 ---
 
 ## Requirements
 
-- Node.js 18 or newer
+- Node.js 18 or newer (Railway runs this on Node 22)
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
-- A persistent volume (on Railway) for the SQLite database
+- A dedicated Telegram account for advertising, plus its `api_id` / `api_hash`
+  from [my.telegram.org](https://my.telegram.org)
+- A persistent volume (on Railway) for the SQLite database and cached media
 
 ---
 
 ## Quick start (local)
 
 ```bash
-cd acc-store-advertiser
 npm install
 cp .env.example .env      # then edit .env
 # for local runs set DB_PATH=./data/advertiser.db
+npm run login:user        # once, to generate TELEGRAM_USER_SESSION
 npm start
 ```
 
@@ -77,6 +117,51 @@ groupid - Show this chat's id
 Keep the token secret. It is never logged, never written to the database, and
 never hardcoded.
 
+## 1b. Generate the user session (once, locally)
+
+The advertisements are sent by a normal Telegram account, which needs a
+*session string*. You generate it **once, on your own computer**:
+
+```bash
+npm run login:user
+```
+
+It asks, interactively in your terminal:
+
+1. 📱 phone number (with country code)
+2. 🔢 the login code Telegram sends you
+3. 🔐 your two-factor password, only if the account has one
+
+The code and the password are typed with the echo turned off, are used only to
+complete the login, and are **never stored** — not on disk, not in SQLite, not
+in a log. On success the script prints the session string once:
+
+```
+──────────────────────────────────────────────────────────────
+  TELEGRAM_USER_SESSION — copy the line below
+──────────────────────────────────────────────────────────────
+
+1AaBbCc...
+```
+
+Paste that into Railway as `TELEGRAM_USER_SESSION`, then clear your terminal.
+
+**Prerequisite:** set `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` in your local
+`.env` first. Get them from <https://my.telegram.org> → *API development
+tools*, signed in as the advertising account.
+
+### Why there is no login-by-chat
+
+There is deliberately **no** way to log in through the admin bot. Sending your
+login code or 2FA password to a Telegram chat would put both in message
+history, on Telegram's servers, and in this project's database. Authentication
+is CLI-only, on your own machine.
+
+### If the session leaks or stops working
+
+Telegram → **Settings → Devices** → terminate that session, then run
+`npm run login:user` again and replace the Railway variable.
+
 ## 2. Set ADMIN_IDS
 
 1. Open [@userinfobot](https://t.me/userinfobot) and send it any message.
@@ -90,20 +175,47 @@ ADMIN_IDS=123456789,987654321
 Anyone not in this list gets a single neutral reply
 (`This bot is for ACC STORE administration.`) and no access to any control.
 
-## 3. Register a group
+## 3. Register groups
 
-1. Add the advertising bot to the group.
-2. Make sure it can send messages (in a restricted group, make it an admin or
-   grant "Send Messages").
-3. Send `/register_group` in that group as an admin.
+### Preferred: Import My Groups
 
-The bot verifies it can actually post, then replies
-`✅ Group registered successfully.` and the group appears under
-**Admin Panel → 👥 Groups**. Sending the command again replies
-`ℹ️ This group is already registered.`
+1. In the **official Telegram app**, signed in as the advertising account,
+   join the groups where advertising is permitted.
+2. In the admin panel: **⚙️ Sender Account → 👥 Import My Groups**.
+3. Tick the groups and press **✅ Add Selected**.
 
-To stop advertising there, send `/unregister_group` in the group or use
-**Groups → Remove Group** in the panel.
+```
+👥 Import My Groups
+
+Groups the sender account is already in: 37
+Hidden (left, or sending not permitted): 4
+
+☑️ Digital Market Iraq
+☐ Software Marketplace
+✅ Subscriptions Group (registered)
+
+[✅ Add Selected (1)]  [☐ Clear]
+[🔄 Refresh list]      [⬅️ Back]
+```
+
+The list is read from the account's own dialog list — nothing is joined,
+searched for or discovered. Chats the account has left, or where sending is
+clearly forbidden, are filtered out and only counted.
+
+Before a group is added, the account must **resolve the peer** and still be a
+member with sending allowed; anything that fails verification is skipped and
+reported, not registered. The group's MTProto peer identity (`peer_type` and
+the 64-bit `access_hash`) is stored so the peer keeps resolving after a
+restart, when the in-memory entity cache is empty.
+
+### Legacy: bot delivery
+
+Still supported for groups the *bot* posts to: add the bot, let it send
+messages, then send `/register_group` there. Those groups keep `sender_kind =
+'bot'` and keep their real inline buttons.
+
+To stop advertising in a group, use **Groups → Remove Group** (or
+`/unregister_group` for a bot-registered one).
 
 ## 4. Create your first campaign
 
@@ -157,6 +269,84 @@ Sends are spaced by `SEND_DELAY_MS`, and you get a per-group result summary.
 If advertising is paused, the confirmation says so and the button reads
 **✅ Confirm (bypass pause)** — a manual send is an explicit override.
 
+## 6b. How an advertisement is actually sent
+
+```
+Admin bot (panel)
+      ↓
+campaigns · scheduler · allowlist · delivery ledger   (SQLite)
+      ↓
+global send queue        ← one message at a time, 20s apart
+      ↓
+MTProto user account
+      ↓
+the groups you ticked
+```
+
+Routing is **per group**, from its `sender_kind` column:
+
+- `user` → rendered for a user account, queued, sent over MTProto
+- `bot` → rendered with a real inline button, sent by the bot (unchanged)
+
+### Inline buttons: the one real difference
+
+A **bot** may attach an inline keyboard to a message. A **normal user account
+may not** — in MTProto, `reply_markup` is only honoured for bot accounts. There
+is no legitimate way to fake a bot-style button from a user account, so this
+project does not try.
+
+Instead, for user-account sends the campaign link is appended to the message
+body as visible, auto-linked text:
+
+```
+🛍 ACC STORE
+Premium digital subscriptions and services available now.
+
+🛒 Open ACC STORE:
+https://t.me/YourStoreBot
+```
+
+The button label becomes the link label, so you still control the wording. If
+the text would exceed Telegram's limit, the **body** is trimmed and the link is
+always kept.
+
+👁 **Preview** renders through this exact same code path, so what you see is
+what the group gets. The preview header says which identity it is imitating
+(`👤 as the USER ACCOUNT` / `🤖 as the BOT`) and offers a button to switch.
+
+### Media
+
+A Bot API `file_id` cannot be used over MTProto. So the first time a campaign
+with media is sent by the user account, the file is downloaded once from the
+Bot API to the persistent volume (next to the database) and uploaded from
+there. The `file_id` is still kept and reused for bot sends and previews.
+
+For a batch, the file is uploaded **once** and reused across every group in
+that batch. If the file cannot be cached, the send **fails loudly** with
+`MEDIA_UNAVAILABLE` and the group is flagged — it never silently posts the ad
+without its image.
+
+## 6c. Rate limits, FLOOD_WAIT and slow mode
+
+Every user-account send goes through one global queue. Only one message is ever
+in flight, and consecutive sends are separated by `USER_SEND_DELAY_MS`
+(default 20s).
+
+When Telegram asks the account to wait, the wait is obeyed exactly — never
+shortened, never bypassed, never tight-looped:
+
+| Telegram says | Scope | What happens |
+|---|---|---|
+| `FLOOD_WAIT_X` | **Account** | The whole queue is held for `X + 5s`. Stored in SQLite as `flood_wait_until`, so a restart still honours it. The scheduler skips every user group until it expires. |
+| `SLOWMODE_WAIT_X` | **Chat** | Only that group is deferred by `X`. Other groups keep sending. |
+| `PEER_FLOOD` | **Account** | Telegram's anti-spam signal, with no number attached. Backs off for hours and shows in the panel. No retry. |
+
+A deferred advertisement is **never discarded**. The claimed delivery slot is
+released so the same ad is retried at the new time, and a rate-limit wait is
+not counted as a failure or shown as a broken group.
+
+If a longer hold is already in place, a shorter one never replaces it.
+
 ## 7. Automatic scheduling
 
 The scheduler wakes every 60 seconds only to **check** which groups are due.
@@ -201,8 +391,16 @@ covered by a test.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `BOT_TOKEN` | ✅ | — | Advertising bot token from BotFather |
+| `BOT_TOKEN` | ✅ | — | Admin bot token from BotFather |
 | `ADMIN_IDS` | ✅ | — | Comma-separated numeric Telegram user IDs |
+| `TELEGRAM_API_ID` | ✅ | — | From my.telegram.org, for the advertising account |
+| `TELEGRAM_API_HASH` | ✅ | — | From my.telegram.org — **secret** |
+| `TELEGRAM_USER_SESSION` | ✅ | — | From `npm run login:user` — **secret, treat as a password** |
+| `USER_SEND_DELAY_MS` | | `20000` | Gap between consecutive user-account sends |
+| `USER_SENDER_ENABLED` | | `true` | Set `false` to run the panel without user sending |
+| `MEDIA_DIR` | | next to the DB | Where campaign media is cached for MTProto upload |
+| `FLOOD_WAIT_MARGIN_SECONDS` | | `5` | Safety margin added to any wait Telegram asks for |
+| `MAX_FLOOD_WAIT_SECONDS` | | `21600` | Cap on one hold (the wait is never shortened below Telegram's) |
 | `DB_PATH` | | `/data/advertiser.db` | SQLite file path |
 | `MAIN_STORE_BOT_URL` | | — | Link used by the default campaign button |
 | `MAIN_STORE_BOT_USERNAME` | | — | Fallback used to build the URL |
@@ -234,7 +432,16 @@ covered by a test.
    MAIN_STORE_BOT_URL=https://t.me/YourStoreBot
    DEFAULT_AD_INTERVAL_MINUTES=360
    TZ=Asia/Baghdad
+   NIXPACKS_NODE_VERSION=22
+
+   TELEGRAM_API_ID=1234567
+   TELEGRAM_API_HASH=...
+   TELEGRAM_USER_SESSION=...
+   USER_SEND_DELAY_MS=20000
    ```
+
+   `TELEGRAM_API_HASH` and `TELEGRAM_USER_SESSION` are secrets. Paste them
+   straight into Railway — never into a file in this repository.
 
 4. **Start command** — `npm start` (already set in `railway.json`).
 5. **Deploy**, then check the logs for:
@@ -243,10 +450,24 @@ covered by a test.
    [Advertiser] starting
    [Database] path: /data/advertiser.db
    [Database] persistent: YES
+   [Advertiser] admin bot connected as @AD_SENDER_9_bot
+   [User Sender] MTProto session loaded
+   [User Sender] connected as @your_ad_account
    [Scheduler] enabled (checking every 60s)
-   [Groups] 0 registered (0 enabled)
+   [Groups] 0 registered (0 enabled) — 0 via user account, 0 via bot
    [Campaigns] 1 active
    ```
+
+   If the session is missing or revoked you get this instead, and the **admin
+   bot still starts normally**:
+
+   ```
+   [User Sender] unavailable — TELEGRAM_USER_SESSION is missing.
+   [User Sender] admin bot continues; fix it from the panel or regenerate with npm run login:user
+   ```
+
+   The reason is shown in ⚙️ Sender Account, where 🔄 Reconnect and
+   🔐 Check Session let you retry without a redeploy.
 
    If it says `persistent: NO`, the volume is not mounted at `/data` — fix that
    before registering groups, or your data will be lost on the next deploy.
@@ -259,10 +480,15 @@ closes SQLite cleanly.
 
 ---
 
-## Telegram permissions the bot needs
+## Telegram permissions needed
 
-In every advertising group the bot must be a member and be able to **send
-messages**. That is the only mandatory permission.
+**For user-account groups (the normal case)** the admin bot does **not** need
+to be in the group at all. The *user account* must be a member and allowed to
+send messages. Optional delete-previous-ad needs the account to be able to
+delete its own messages, which it always can.
+
+**For legacy bot-delivered groups** the bot must be a member and be able to
+**send messages**. That is the only mandatory permission.
 
 - **Delete previous ad** (optional, off by default) additionally needs **Delete
   Messages**, which means making the bot an admin. It only ever deletes the
@@ -281,6 +507,8 @@ Registration is refused up front if the bot cannot post.
 ```
 acc-store-advertiser/
 ├── index.js                 # entry point: startup checks, wiring, shutdown
+├── scripts/
+│   └── login.js             # one-time local CLI login (npm run login:user)
 ├── package.json
 ├── railway.json / Procfile  # Railway deployment config
 ├── .env.example
@@ -297,15 +525,20 @@ acc-store-advertiser/
 │   ├── groups.js            # /register_group and group management
 │   ├── campaigns.js         # campaign editor and preview
 │   ├── settings.js          # global settings
+│   ├── sender.js            # Sender Account panel + Import My Groups
 │   ├── sendnow.js           # manual broadcast flows
 │   ├── stats.js             # statistics
 │   └── callbacks.js         # callback router and input handling
 ├── services/
-│   ├── telegram.js          # send wrapper, 429 retry, error classification
-│   ├── broadcaster.js       # idempotent delivery, rate limiting
+│   ├── telegram.js          # BOT send wrapper, 429 retry, error classification
+│   ├── userSender.js        # MTProto USER ACCOUNT: connect, dialogs, send
+│   ├── sendQueue.js         # global serialised queue + FLOOD_WAIT gate
+│   ├── render.js            # per-sender rendering (inline button vs link)
+│   ├── mediaStore.js        # caches bot file_id media for MTProto upload
+│   ├── broadcaster.js       # idempotent delivery, per-group sender routing
 │   ├── scheduler.js         # due-group tick loop
 │   ├── policy.js            # interval / quiet-hours / timezone resolution
-│   └── shutdown.js          # SIGTERM / SIGINT handling
+│   └── shutdown.js          # SIGTERM / SIGINT handling, disconnects both
 ├── utils/
 │   ├── keyboard.js          # inline keyboards, stable callback data
 │   ├── html.js              # Telegram HTML validation, URL validation
@@ -317,6 +550,9 @@ acc-store-advertiser/
     ├── campaigns.test.js
     ├── scheduler.test.js
     ├── broadcaster.test.js
+    ├── userSender.test.js    # MTProto connect, import, no-auto-join, secrets
+    ├── queue.test.js         # FLOOD_WAIT, SLOWMODE_WAIT, serialisation
+    ├── migration.test.js     # existing production data survives the upgrade
     └── database.test.js
 ```
 
@@ -327,14 +563,25 @@ acc-store-advertiser/
 | Table | Purpose |
 |---|---|
 | `settings` | Key/value globals: pause flag, default interval, timezone, quiet hours, store URL, default campaign |
-| `campaigns` | Campaign content: text, media type + `file_id`, button, parse mode, language label, enabled, timestamps |
-| `groups` | Registered groups: chat id, title, type, username, enabled, interval, campaign, rotation, `last_send_at`, `next_send_at`, `last_message_id`, quiet hours, delete-previous, delivery problem |
+| `campaigns` | Campaign content: text, media type + `file_id`, button, parse mode, language label, enabled, timestamps, `media_local_path` |
+| `groups` | Registered groups: chat id, title, type, username, enabled, interval, campaign, rotation, `last_send_at`, `next_send_at`, `last_message_id`, quiet hours, delete-previous, delivery problem — plus `sender_kind`, `peer_type`, `access_hash`, `peer_checked_at` |
 | `group_campaigns` | Ordered rotation list per group |
 | `ad_deliveries` | Every send attempt with a unique `idempotency_key`, status, Telegram message id and error code |
 | `audit_log` | Admin actions: `admin_id`, action, target, timestamp |
 | `migrations` | Applied migration ids (additive only) |
 
-No secrets are ever stored in the database.
+No secrets are ever stored in the database. `BOT_TOKEN`, `TELEGRAM_API_HASH`
+and `TELEGRAM_USER_SESSION` live only in environment variables and in memory.
+They are registered with the logger at boot, so even if one ended up inside an
+error message it is replaced with `[REDACTED]` before output. A test dumps every
+table and asserts none of them appears.
+
+### Migrations
+
+Additive only — `ALTER TABLE ... ADD COLUMN` guarded by a `PRAGMA table_info`
+check, tracked by id in the `migrations` table. The database is never dropped or
+recreated. `002_mtproto_user_sender` adds the columns above; every existing
+group defaults to `sender_kind = 'bot'` and keeps working exactly as before.
 
 ---
 
@@ -350,17 +597,29 @@ No secrets are ever stored in the database.
 ├── ⏱ Schedule ───── default interval
 ├── 🚀 Send Now ──── one group / selected groups / all enabled (with confirmation)
 ├── 📊 Statistics ── counts + recent deliveries
-└── ⚙️ Settings ──── default interval / quiet hours / timezone / store URL /
-                      default campaign / pause / resume / audit log
+├── ⚙️ Settings ──── default interval / quiet hours / timezone / store URL /
+│                     default campaign / pause / resume / audit log
+└── ⚙️ Sender Account
+    ├── 🔄 Reconnect
+    ├── 🔐 Check Session
+    └── 👥 Import My Groups
+```
+
+⚙️ Sender Account shows only safe information — connection state, first name
+and username, joined-group count, registered-group count and any active rate
+limit. Never a phone number, api hash, session or 2FA password.
 ```
 
 ---
 
 ## Tests
 
-78 tests covering admin authentication, group registration, the campaign
+125 tests covering admin authentication, group registration, the campaign
 editor, scheduling, duplicate prevention, rate limiting, error handling,
-persistence and clean shutdown.
+persistence and clean shutdown — plus MTProto connection handling, secret
+redaction, group import, no-auto-join guarantees, `FLOOD_WAIT` / `SLOWMODE_WAIT`
+behaviour, queue serialisation, and an upgrade test against a database built at
+the previous schema version.
 
 ```bash
 npm test

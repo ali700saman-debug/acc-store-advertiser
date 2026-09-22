@@ -16,6 +16,7 @@ const campaignsHandler = require('./campaigns');
 const settingsHandler = require('./settings');
 const sendNowHandler = require('./sendnow');
 const statsHandler = require('./stats');
+const senderHandler = require('./sender');
 const policy = require('../services/policy');
 const { parseIntervalInput, formatInterval, parseHHMM } = require('../utils/time');
 const { validateUrl } = require('../utils/html');
@@ -63,13 +64,22 @@ async function routeGroups(ctx, { query, chatId, messageId, action, args, userId
         text: [
           '➕ <b>Add a group</b>',
           '',
-          '1. Add this bot to the Telegram group.',
-          '2. Make sure it is allowed to send messages.',
-          '3. Send <code>/register_group</code> inside that group.',
+          '<b>Preferred — user account</b>',
+          '1. Join the group yourself in the official Telegram app,',
+          '   using the advertising account.',
+          '2. Open ⚙️ Sender Account → 👥 Import My Groups.',
+          '3. Tick the group and press Add Selected.',
           '',
-          'Only admins listed in ADMIN_IDS can register a group, and the bot only ever advertises in groups registered this way.',
+          '<b>Legacy — bot delivery</b>',
+          'Add this bot to the group, give it permission to send messages,',
+          'then send <code>/register_group</code> there.',
+          '',
+          '<i>Only groups you explicitly add here are ever advertised in. Nothing is joined automatically, and belonging to a group is never enough on its own.</i>',
         ].join('\n'),
-        keyboard: [[button('⬅️ Back', cb('g', 'list', '0'))]],
+        keyboard: [
+          [button('👥 Import My Groups', cb('sndr', 'imp', '0'))],
+          [button('⬅️ Back', cb('g', 'list', '0'))],
+        ],
       });
 
     case 'v':
@@ -295,7 +305,7 @@ async function routeCampaigns(ctx, { query, chatId, messageId, action, args, use
       const campaign = q.getCampaign(campaignId);
       if (!campaign) return campaignsHandler.showCampaignList(ctx, { chatId, messageId });
       await answer(ctx, query.id, '👁 Preview below');
-      await campaignsHandler.sendPreview(ctx, { chatId, campaign });
+      await campaignsHandler.sendPreview(ctx, { chatId, campaign, senderKind: args[1] || null });
       return null;
     }
 
@@ -544,6 +554,91 @@ async function routeSendNow(ctx, { query, chatId, messageId, action, args, userI
   }
 }
 
+// ------------------------------------------------------- sender/import routes
+
+async function routeSender(ctx, { query, chatId, messageId, action, args, userId }) {
+  switch (action) {
+    case 'home':
+      return senderHandler.showSenderPanel(ctx, { chatId, messageId });
+
+    case 'rc': {
+      if (!ctx.userSender) {
+        await answer(ctx, query.id, '⚠️ User sender is not configured.', true);
+        return null;
+      }
+      await answer(ctx, query.id, '🔄 Reconnecting…');
+      const status = await ctx.userSender.reconnect();
+      ctx.q.recordAudit(userId, 'sender.reconnect', null, status.status);
+      return senderHandler.showSenderPanel(ctx, {
+        chatId,
+        messageId,
+        note: status.connected ? '✅ Reconnected.' : `⚠️ ${esc(status.reason || 'Could not connect.')}`,
+      });
+    }
+
+    case 'cs': {
+      if (!ctx.userSender) {
+        await answer(ctx, query.id, '⚠️ User sender is not configured.', true);
+        return null;
+      }
+      await answer(ctx, query.id, '🔐 Checking…');
+      const result = await ctx.userSender.checkSession();
+      // Refresh the joined-group count while we are connected anyway.
+      if (result.ok) {
+        const groups = await ctx.userSender.listGroups({ limit: 300 });
+        if (groups.ok) {
+          ctx.senderCache = { ...(ctx.senderCache || {}), joinedGroups: groups.groups.length + groups.hidden, fetchedAt: new Date().toISOString() };
+        }
+      }
+      ctx.q.recordAudit(userId, 'sender.check_session', null, result.ok ? 'ok' : 'failed');
+      return senderHandler.showSenderPanel(ctx, {
+        chatId,
+        messageId,
+        note: result.ok ? '✅ Session is valid.' : `⚠️ ${esc(result.reason || 'Session check failed.')}`,
+      });
+    }
+
+    case 'imp':
+      return senderHandler.showImportList(ctx, { chatId, messageId, userId, page: Number(args[0] || 0) });
+
+    case 'ref':
+      await answer(ctx, query.id, '🔄 Refreshing…');
+      return senderHandler.showImportList(ctx, { chatId, messageId, userId, page: 0, force: true });
+
+    case 't': {
+      const page = Number(args[0] || 0);
+      const index = Number(args[1]);
+      const session = ctx.sessions.get(userId);
+      if (!session || session.type !== senderHandler.SESSION_TYPE) {
+        return senderHandler.showImportList(ctx, { chatId, messageId, userId, page });
+      }
+      const dialog = session.dialogs[index];
+      // Already-registered groups are shown as done and are not selectable.
+      if (dialog && ctx.q.getGroup(dialog.chatId)) {
+        await answer(ctx, query.id, 'Already registered.');
+        return null;
+      }
+      const selected = session.selected || [];
+      const next = selected.includes(index) ? selected.filter((i) => i !== index) : [...selected, index];
+      ctx.sessions.patch(userId, { selected: next });
+      return senderHandler.showImportList(ctx, { chatId, messageId, userId, page });
+    }
+
+    case 'clr':
+      ctx.sessions.patch(userId, { selected: [] });
+      return senderHandler.showImportList(ctx, { chatId, messageId, userId, page: 0 });
+
+    case 'add': {
+      await answer(ctx, query.id, '⏳ Verifying and adding…');
+      const result = await senderHandler.addSelectedGroups(ctx, userId);
+      return senderHandler.showSenderPanel(ctx, { chatId, messageId, note: result.note });
+    }
+
+    default:
+      return senderHandler.showSenderPanel(ctx, { chatId, messageId });
+  }
+}
+
 // ----------------------------------------------------------- input handling
 
 /** Handles the admin's reply to a pending "send me a value" prompt. */
@@ -714,6 +809,11 @@ async function routeCallback(ctx, query) {
       await answer(ctx, query.id);
       return result;
     }
+    case 'sndr': {
+      const result = await routeSender(ctx, params);
+      await answer(ctx, query.id);
+      return result;
+    }
     case 'st': {
       await answer(ctx, query.id);
       return action === 'recent' ? statsHandler.showRecent(ctx, { chatId, messageId }) : statsHandler.showStats(ctx, { chatId, messageId });
@@ -742,7 +842,7 @@ function register(ctx) {
     if (typeof msg.text === 'string' && msg.text.startsWith('/')) return;
 
     const session = ctx.sessions.get(msg.from.id);
-    if (!session || session.type === 'n_select') return;
+    if (!session || session.type === 'n_select' || session.type === senderHandler.SESSION_TYPE) return;
 
     return handleSessionInput(ctx, msg, session).catch((error) => {
       ctx.logger.error(`input (${session.type}) failed: ${error.message}`);

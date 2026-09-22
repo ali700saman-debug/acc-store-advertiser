@@ -100,6 +100,36 @@ const MIGRATIONS = [
       `);
     },
   },
+  {
+    // Adds MTProto user-account delivery alongside the original bot delivery.
+    // Purely additive: every existing row keeps working, defaulting to the
+    // bot sender it was registered with.
+    id: '002_mtproto_user_sender',
+    up: (db) => {
+      const groupColumns = new Set(db.prepare('PRAGMA table_info(groups)').all().map((c) => c.name));
+      const addGroupColumn = (name, definition) => {
+        if (!groupColumns.has(name)) db.exec(`ALTER TABLE groups ADD COLUMN ${name} ${definition};`);
+      };
+
+      // Which client posts to this group: 'bot' (original) or 'user' (MTProto).
+      addGroupColumn('sender_kind', "TEXT NOT NULL DEFAULT 'bot'");
+      // MTProto peer identity. access_hash is a signed 64-bit value that does
+      // not fit a JS number, so it is stored as TEXT to avoid precision loss.
+      addGroupColumn('peer_type', 'TEXT');
+      addGroupColumn('access_hash', 'TEXT');
+      // Last time the user account confirmed it can still reach this peer.
+      addGroupColumn('peer_checked_at', 'TEXT');
+
+      const campaignColumns = new Set(db.prepare('PRAGMA table_info(campaigns)').all().map((c) => c.name));
+      if (!campaignColumns.has('media_local_path')) {
+        // A Bot API file_id cannot be used by an MTProto user account, so the
+        // file is cached on the persistent volume and uploaded from there.
+        db.exec('ALTER TABLE campaigns ADD COLUMN media_local_path TEXT;');
+      }
+
+      db.exec('CREATE INDEX IF NOT EXISTS idx_groups_sender ON groups (sender_kind, enabled);');
+    },
+  },
 ];
 
 /**
