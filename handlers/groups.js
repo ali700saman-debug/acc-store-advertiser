@@ -92,7 +92,16 @@ async function showGroupDetail(ctx, { chatId, messageId, targetChatId }) {
     `🌙 Quiet hours: ${quiet.enabled ? `${quiet.start}–${quiet.end} (${quiet.source})` : 'Off'}`,
     `🗑 Delete previous ad: ${group.delete_previous ? 'On' : 'Off'}`,
   ];
-  if (group.delivery_problem) {
+  if (group.blocked_reason) {
+    lines.push(
+      '',
+      `🚫 Blocked by Telegram: <b>${esc(group.blocked_reason)}</b>`,
+      esc(group.last_error || ''),
+      '',
+      'Automatic sending is off for this group so it is not retried every tick.',
+      'Fix the permission in Telegram, then press 🔐 Re-check Permission.'
+    );
+  } else if (group.delivery_problem) {
     lines.push('', `⚠️ Delivery problem: ${esc(group.last_error || 'unknown')}`);
   } else if (group.last_error) {
     // A rate-limit wait is not a fault; show it without the alarm.
@@ -106,7 +115,7 @@ async function showGroupDetail(ctx, { chatId, messageId, targetChatId }) {
     [button(group.enabled ? '⛔ Disable' : '✅ Enable', cb('g', 'tog', group.chat_id)), button('⏱ Change Interval', cb('g', 'int', group.chat_id))],
     [button('📣 Select Campaign', cb('g', 'cam', group.chat_id)), button('🚀 Send Test', cb('g', 'test', group.chat_id))],
     [button('🌙 Quiet Hours', cb('g', 'quiet', group.chat_id)), button(group.delete_previous ? '🗑 Delete prev: On' : '🗑 Delete prev: Off', cb('g', 'prev', group.chat_id))],
-    [button('🔐 Check Permissions', cb('g', 'perm', group.chat_id)), button('🗑 Remove Group', cb('g', 'rm', group.chat_id))],
+    [button('🔐 Re-check Permission', cb('g', 'perm', group.chat_id)), button('🗑 Remove Group', cb('g', 'rm', group.chat_id))],
     [button('⬅️ Back', cb('g', 'list', '0'))],
   ];
 

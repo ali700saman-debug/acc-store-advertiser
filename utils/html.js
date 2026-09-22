@@ -3,13 +3,21 @@
 /** Helpers for Telegram's restricted HTML parse mode. */
 
 // Tags Telegram accepts in parse_mode=HTML.
+const { sanitizeUnicode, truncateGraphemes } = require('./text');
+
 const ALLOWED_TAGS = [
   'b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del',
   'span', 'tg-spoiler', 'a', 'code', 'pre', 'blockquote',
 ];
 
+/**
+ * Escapes HTML AND removes anything Telegram cannot encode as UTF-8.
+ *
+ * Message bodies carry group titles too, so a lone surrogate here would be
+ * rejected just like one in a button label.
+ */
 function escapeHtml(value) {
-  return String(value ?? '')
+  return sanitizeUnicode(value)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
@@ -56,10 +64,14 @@ function lengthLimitFor(mediaType) {
   return mediaType ? 1024 : 4096;
 }
 
+/**
+ * Truncates by grapheme cluster, never by UTF-16 code unit.
+ *
+ * The previous implementation used slice(), which could cut an emoji in half
+ * and leave a lone surrogate that the Bot API rejects.
+ */
 function truncate(value, max = 60) {
-  const text = String(value ?? '');
-  if (text.length <= max) return text;
-  return `${text.slice(0, Math.max(0, max - 1))}…`;
+  return truncateGraphemes(value, max);
 }
 
 /** Only http(s) and tg:// links are accepted for campaign buttons. */

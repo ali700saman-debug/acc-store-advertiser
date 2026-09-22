@@ -11,7 +11,7 @@
 
 const { cb, button } = require('../utils/keyboard');
 const { renderPanel, esc, paginate, pagerRow } = require('./common');
-const { truncate } = require('../utils/html');
+const { safeButtonLabel } = require('../utils/text');
 const { STATUS } = require('../services/userSender');
 const { formatDateTime, formatInterval } = require('../utils/time');
 const policy = require('../services/policy');
@@ -131,7 +131,9 @@ async function showImportList(ctx, { chatId, messageId, userId, page = 0, force 
     const already = registered.has(dialog.chatId);
     const mark = already ? '✅' : chosen.has(index) ? '☑️' : '☐';
     const suffix = already ? ' (registered)' : '';
-    return [button(`${mark} ${truncate(dialog.title, 26)}${suffix}`, cb('sndr', 't', pagination.page, index))];
+    // Telegram titles are arbitrary: sanitize before they become button text.
+    const label = safeButtonLabel(dialog.title, { max: 26 });
+    return [button(`${mark} ${label}${suffix}`, cb('sndr', 't', pagination.page, index))];
   });
 
   const pager = pagerRow(pagination, (p) => cb('sndr', 'imp', p));
@@ -171,6 +173,7 @@ async function addSelectedGroups(ctx, userId) {
 
   const added = [];
   const skipped = [];
+  let newlyAdded = 0;
 
   for (const index of session.selected) {
     const dialog = session.dialogs[index];
@@ -195,13 +198,14 @@ async function addSelectedGroups(ctx, userId) {
       access_hash: candidate.access_hash,
     });
     if (!verified.ok) {
-      skipped.push(`${dialog.title} — ${verified.friendly}`);
+      skipped.push(`${safeButtonLabel(dialog.title, { max: 30 })} — ${verified.friendly}`);
       continue;
     }
 
     const { created } = ctx.q.registerUserGroup(candidate);
     ctx.q.recordAudit(userId, created ? 'group.import' : 'group.import_refresh', String(dialog.chatId), dialog.title);
-    added.push(`${dialog.title}${created ? '' : ' (updated)'}`);
+    added.push(`${safeButtonLabel(dialog.title, { max: 30 })}${created ? '' : ' (updated)'}`);
+    if (created) newlyAdded += 1;
   }
 
   ctx.sessions.patch(userId, { selected: [] });
@@ -209,9 +213,16 @@ async function addSelectedGroups(ctx, userId) {
   const lines = [];
   if (added.length) lines.push(`✅ Added ${added.length} group${added.length === 1 ? '' : 's'}:`, ...added.map((t) => `• ${esc(t)}`));
   if (skipped.length) lines.push('', `⚠️ Skipped ${skipped.length}:`, ...skipped.map((t) => `• ${esc(t)}`));
-  if (added.length) lines.push('', `⏱ Interval: ${formatInterval(interval)} (change per group under 👥 Groups)`);
+  if (newlyAdded) {
+    lines.push(
+      '',
+      `⛔ Newly added groups start <b>disabled</b>, so importing never starts a broadcast.`,
+      `Open 👥 Groups, check each one, then press ✅ Enable.`,
+      `⏱ Interval when enabled: ${formatInterval(interval)}`
+    );
+  }
 
-  return { ok: true, note: lines.join('\n'), added: added.length, skipped: skipped.length };
+  return { ok: true, note: lines.join('\n'), added: added.length, skipped: skipped.length, newlyAdded };
 }
 
 module.exports = {

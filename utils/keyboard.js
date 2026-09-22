@@ -8,7 +8,13 @@
  *   "<namespace>:<action>[:<arg>...]"
  */
 
+const { safeButtonLabel } = require('./text');
+
 const SEP = ':';
+
+// Telegram has no documented hard limit on button text, but long labels wrap
+// badly. This is a safety net for static labels; call sites use tighter values.
+const MAX_BUTTON_LABEL = 64;
 
 function cb(namespace, action, ...args) {
   const data = [namespace, action, ...args.filter((a) => a !== undefined && a !== null)].join(SEP);
@@ -23,12 +29,20 @@ function parseCallback(data) {
   return { namespace: parts[0] || '', action: parts[1] || '', args: parts.slice(2) };
 }
 
+/**
+ * Every button goes through the sanitizer.
+ *
+ * This is the single chokepoint that guarantees the Bot API can never reject
+ * a keyboard with "inline keyboard button text must be encoded in UTF-8" —
+ * one invalid label rejects the whole keyboard, so a group title with an
+ * emoji at the wrong offset used to break an entire panel.
+ */
 function button(text, data) {
-  return { text, callback_data: data };
+  return { text: safeButtonLabel(text, { max: MAX_BUTTON_LABEL, fallback: '-' }), callback_data: data };
 }
 
 function urlButton(text, url) {
-  return { text, url };
+  return { text: safeButtonLabel(text, { max: MAX_BUTTON_LABEL, fallback: '-' }), url };
 }
 
 function rows(...list) {
@@ -57,4 +71,4 @@ function confirmRow(confirmData, cancelData, confirmLabel = '✅ Confirm', cance
   return [button(confirmLabel, confirmData), button(cancelLabel, cancelData)];
 }
 
-module.exports = { SEP, cb, parseCallback, button, urlButton, rows, markup, grid, backRow, confirmRow };
+module.exports = { SEP, cb, parseCallback, button, urlButton, rows, markup, grid, backRow, confirmRow, MAX_BUTTON_LABEL };

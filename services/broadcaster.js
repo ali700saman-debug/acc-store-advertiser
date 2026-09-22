@@ -225,9 +225,18 @@ function createBroadcaster({
           logger.error('user session became invalid — regenerate it with npm run login:user');
         }
         q.markDeliveryFailed(deliveryId, { code: info.reason, message: info.friendly });
-        q.recordGroupError(group.chat_id, { message: info.friendly, problem: info.permanent });
+
+        if (info.permanent) {
+          // Telegram will keep refusing this chat. Stop automatic sending
+          // rather than retrying every tick; the admin re-checks and re-enables.
+          q.markGroupBlocked(group.chat_id, { reason: info.reason, message: info.friendly });
+          logger.warn(`user send to ${group.chat_id} blocked: ${info.reason} — automatic sending disabled for this group`);
+          return { status: 'failed', reason: info.reason, friendly: info.friendly, permanent: true, blocked: true, deliveryId };
+        }
+
+        q.recordGroupError(group.chat_id, { message: info.friendly, problem: false });
         logger.warn(`user send to ${group.chat_id} failed: ${info.reason}`);
-        return { status: 'failed', reason: info.reason, friendly: info.friendly, permanent: Boolean(info.permanent), deliveryId };
+        return { status: 'failed', reason: info.reason, friendly: info.friendly, permanent: false, deliveryId };
       }
 
       const info = error.classified || { reason: BOT_REASONS.UNKNOWN, friendly: error.message, permanent: false, migrateToChatId: null };
@@ -241,9 +250,18 @@ function createBroadcaster({
       }
 
       q.markDeliveryFailed(deliveryId, { code: info.reason, message: info.description || info.friendly });
-      q.recordGroupError(group.chat_id, { message: info.friendly, problem: info.permanent });
+
+      if (info.permanent) {
+        // Same rule for bot delivery: a permanently refused chat is not
+        // retried on every tick until the admin re-checks it.
+        q.markGroupBlocked(group.chat_id, { reason: info.reason, message: info.friendly });
+        logger.warn(`bot send to ${group.chat_id} blocked: ${info.reason} — automatic sending disabled for this group`);
+        return { status: 'failed', reason: info.reason, friendly: info.friendly, permanent: true, blocked: true, deliveryId };
+      }
+
+      q.recordGroupError(group.chat_id, { message: info.friendly, problem: false });
       logger.warn(`bot send to ${group.chat_id} failed: ${info.reason} (${info.friendly})`);
-      return { status: 'failed', reason: info.reason, friendly: info.friendly, permanent: Boolean(info.permanent), deliveryId };
+      return { status: 'failed', reason: info.reason, friendly: info.friendly, permanent: false, deliveryId };
     }
   };
 

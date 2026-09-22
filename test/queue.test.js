@@ -48,7 +48,9 @@ function bootQueue({ overrides = {}, groupCount = 1, clientOptions = {} } = {}) 
   for (let i = 0; i < groupCount; i += 1) {
     const chatId = -1001000000001 - i;
     q.registerUserGroup({ chat_id: chatId, title: `Group ${i + 1}`, type: 'supergroup', peer_type: 'channel', access_hash: `111111111111111111${i}` });
-    q.updateGroup(chatId, { next_send_at: clock.at.toISOString() });
+    // Imported groups start disabled by design (see G); these fixtures test
+    // sending, so enable them explicitly.
+    q.updateGroup(chatId, { enabled: 1, next_send_at: clock.at.toISOString() });
     groups.push(q.getGroup(chatId));
   }
 

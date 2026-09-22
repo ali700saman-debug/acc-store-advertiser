@@ -23,6 +23,32 @@ const { validateUrl } = require('../utils/html');
 
 const SAVE_KEYBOARD = campaignsHandler.SAVE_KEYBOARD;
 
+/**
+ * Callbacks that may do slow work (MTProto dialog fetches, peer checks,
+ * broadcasts) before they can render anything.
+ *
+ * Telegram expires a callback query after a few seconds; acknowledging it
+ * only once the work finishes produced:
+ *   400 Bad Request: query is too old and response timeout expired
+ * so the spinner hung and the admin saw "Something went wrong".
+ *
+ * These are acknowledged FIRST, with their toast, then the work runs.
+ */
+const SLOW_ACTIONS = new Map([
+  ['sndr:imp', 'Loading your groups...'],
+  ['sndr:ref', 'Refreshing...'],
+  ['sndr:add', 'Verifying and adding...'],
+  ['sndr:cs', 'Checking session...'],
+  ['sndr:rc', 'Reconnecting...'],
+  ['sndr:t', ''],
+  ['sndr:clr', ''],
+  ['g:test', 'Sending test...'],
+  ['g:perm', 'Checking permission...'],
+  ['n:og', 'Sending...'],
+  ['n:go', 'Sending...'],
+  ['c:prev', 'Preview below'],
+]);
+
 /** Recomputes a group's next slot after its interval or quiet hours change. */
 function rescheduleGroup(ctx, chatId) {
   const group = ctx.q.getGroup(chatId);
@@ -170,11 +196,34 @@ async function routeGroups(ctx, { query, chatId, messageId, action, args, userId
     case 'perm': {
       const group = q.getGroup(targetId);
       if (!group) return groupsHandler.showGroupList(ctx, { chatId, messageId });
-      await answer(ctx, query.id, '🔐 Checking…');
-      const permission = await ctx.telegram.checkPostPermission(group.chat_id, ctx.botInfo?.id);
-      if (permission.ok) q.clearGroupError(group.chat_id);
-      else q.recordGroupError(group.chat_id, { code: permission.reason, message: permission.friendly, problem: true });
-      await ctx.bot.sendMessage(chatId, `${permission.ok ? '✅' : '⚠️'} ${esc(permission.friendly)}`, { parse_mode: 'HTML' });
+
+      // Check with whichever client actually delivers to this group.
+      let permission;
+      if (group.sender_kind === 'user') {
+        permission = ctx.userSender && ctx.userSender.isConnected()
+          ? await ctx.userSender.verifyPeer(group)
+          : { ok: false, reason: 'SENDER_UNAVAILABLE', friendly: 'User sender is not connected' };
+      } else {
+        permission = await ctx.telegram.checkPostPermission(group.chat_id, ctx.botInfo?.id);
+      }
+
+      if (permission.ok) {
+        q.clearGroupBlock(group.chat_id);
+        q.updateGroup(group.chat_id, { peer_checked_at: new Date().toISOString() });
+        q.recordAudit(userId, 'group.recheck_ok', String(targetId), group.title || '');
+      } else {
+        q.markGroupBlocked(group.chat_id, { reason: permission.reason, message: permission.friendly });
+        q.recordAudit(userId, 'group.recheck_failed', String(targetId), permission.reason || '');
+      }
+
+      const refreshed = q.getGroup(targetId);
+      await ctx.bot.sendMessage(
+        chatId,
+        permission.ok
+          ? `✅ ${esc(permission.friendly)}.\n\n${refreshed.enabled ? 'Advertising is already enabled here.' : 'Press ✅ Enable to resume advertising in this group.'}`
+          : `🚫 ${esc(permission.friendly)}.\n\nAutomatic sending stays off for this group until a re-check succeeds.`,
+        { parse_mode: 'HTML' }
+      );
       return groupsHandler.showGroupDetail(ctx, { chatId, messageId, targetChatId: targetId });
     }
 
@@ -784,6 +833,14 @@ async function routeCallback(ctx, query) {
   const messageId = query.message?.message_id;
   const { namespace, action, args } = parseCallback(query.data);
   const params = { query, chatId, messageId, action, args, userId };
+
+  // Acknowledge slow routes BEFORE doing the work, so the query cannot expire
+  // while we wait on Telegram. answer() is idempotent, so the handlers' own
+  // acknowledgements below become harmless no-ops.
+  const slowToast = SLOW_ACTIONS.get(`${namespace}:${action}`);
+  if (slowToast !== undefined) {
+    await answer(ctx, query.id, slowToast);
+  }
 
   switch (namespace) {
     case 'home':
