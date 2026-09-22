@@ -15,6 +15,9 @@ const SETTING_DEFAULTS = {
   quiet_enabled: '0',
   quiet_start: '00:00',
   quiet_end: '08:00',
+  // ISO timestamp until which ALL user-account sending is held because
+  // Telegram returned an account-level FLOOD_WAIT.
+  flood_wait_until: null,
 };
 
 const GROUP_UPDATABLE = new Set([
@@ -22,11 +25,12 @@ const GROUP_UPDATABLE = new Set([
   'rotation_enabled', 'last_campaign_id', 'last_send_at', 'next_send_at',
   'last_message_id', 'delete_previous', 'quiet_enabled', 'quiet_start',
   'quiet_end', 'can_send', 'delivery_problem', 'last_error', 'last_error_at',
+  'sender_kind', 'peer_type', 'access_hash', 'peer_checked_at',
 ]);
 
 const CAMPAIGN_UPDATABLE = new Set([
   'name', 'text', 'media_type', 'media_file_id', 'button_text', 'button_url',
-  'parse_mode', 'language', 'enabled',
+  'parse_mode', 'language', 'enabled', 'media_local_path',
 ]);
 
 function nowIso() {
@@ -155,6 +159,67 @@ function createQueries(db) {
     return { created: true, group: api.getGroup(chatId) };
   };
 
+  /**
+   * Registers a group the MTProto USER ACCOUNT is already a member of.
+   * `access_hash` is stored as text (64-bit value, unsafe as a JS number).
+   */
+  api.registerUserGroup = (data) => {
+    const chatId = Number(data.chat_id);
+    const existing = api.getGroup(chatId);
+    if (existing) {
+      // Re-importing an existing group refreshes its peer data only.
+      api.updateGroup(chatId, {
+        title: data.title || existing.title,
+        username: data.username ?? existing.username,
+        sender_kind: 'user',
+        peer_type: data.peer_type || existing.peer_type,
+        access_hash: data.access_hash === undefined || data.access_hash === null ? existing.access_hash : String(data.access_hash),
+        peer_checked_at: nowIso(),
+      });
+      return { created: false, group: api.getGroup(chatId) };
+    }
+    insertGroup.run({
+      chat_id: chatId,
+      title: data.title || '',
+      type: data.type || 'supergroup',
+      username: data.username || null,
+      registered_at: nowIso(),
+      registered_by: data.registered_by ? Number(data.registered_by) : null,
+      next_send_at: data.next_send_at || nowIso(),
+    });
+    api.updateGroup(chatId, {
+      sender_kind: 'user',
+      peer_type: data.peer_type || null,
+      access_hash: data.access_hash === undefined || data.access_hash === null ? null : String(data.access_hash),
+      peer_checked_at: nowIso(),
+    });
+    return { created: true, group: api.getGroup(chatId) };
+  };
+
+  api.listGroupsBySender = (senderKind) =>
+    db.prepare('SELECT * FROM groups WHERE sender_kind = ? ORDER BY title COLLATE NOCASE ASC').all(String(senderKind));
+
+  api.countGroupsBySender = (senderKind) =>
+    db.prepare('SELECT COUNT(*) AS n FROM groups WHERE sender_kind = ?').get(String(senderKind)).n;
+
+  /** Chat ids already on the allowlist — used to mark the import list. */
+  api.registeredChatIds = () => new Set(db.prepare('SELECT chat_id FROM groups').all().map((r) => r.chat_id));
+
+  // ------------------------------------------------- account-level flood gate
+  /**
+   * Telegram FLOOD_WAIT applies to the whole account, so it gates every
+   * user-account send rather than a single group.
+   */
+  api.getFloodWaitUntil = () => api.getSetting('flood_wait_until');
+
+  api.setFloodWaitUntil = (isoOrNull) => api.setSetting('flood_wait_until', isoOrNull);
+
+  api.isFloodGated = (now = new Date()) => {
+    const until = api.getFloodWaitUntil();
+    if (!until) return false;
+    return new Date(until).getTime() > now.getTime();
+  };
+
   api.updateGroup = (chatId, fields = {}) => {
     const update = buildUpdate('groups', 'chat_id', GROUP_UPDATABLE, fields);
     if (!update) return api.getGroup(chatId);
@@ -258,6 +323,14 @@ function createQueries(db) {
 
   api.getDelivery = (id) => db.prepare('SELECT * FROM ad_deliveries WHERE id = ?').get(Number(id)) || null;
   api.getDeliveryByKey = (key) => db.prepare('SELECT * FROM ad_deliveries WHERE idempotency_key = ?').get(String(key)) || null;
+
+  /**
+   * Releases a claimed slot that was never actually sent, so a deferred
+   * advertisement can be retried instead of being lost. Only ever removes a
+   * row that is still 'pending' — a 'sent' row stays as the duplicate guard.
+   */
+  api.releaseDelivery = (id) =>
+    db.prepare("DELETE FROM ad_deliveries WHERE id = ? AND status = 'pending'").run(Number(id)).changes > 0;
 
   api.markDeliverySent = (id, messageId) =>
     db

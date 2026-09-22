@@ -9,6 +9,8 @@
 
 const { makeLogger } = require('../utils/logger');
 const policy = require('./policy');
+const { senderKindOf } = require('./broadcaster');
+const { SENDER_USER } = require('./render');
 
 const defaultSleep = (ms) => (ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve());
 
@@ -27,7 +29,10 @@ function createScheduler({ q, broadcaster, config, logger = makeLogger('Schedule
   service.tick = async () => {
     if (running) return { skipped: true, reason: 'TICK_IN_PROGRESS' };
     running = true;
-    const summary = { checked: 0, sent: 0, duplicate: 0, failed: 0, deferred: 0, noCampaign: 0, paused: false };
+    const summary = {
+      checked: 0, sent: 0, duplicate: 0, failed: 0, deferred: 0,
+      rateLimited: 0, floodHeld: 0, noCampaign: 0, paused: false,
+    };
 
     try {
       lastTickAt = now();
@@ -40,9 +45,20 @@ function createScheduler({ q, broadcaster, config, logger = makeLogger('Schedule
       const due = q.dueGroups(now().toISOString(), config.maxSendsPerTick);
       summary.checked = due.length;
 
+      // Telegram asked the user ACCOUNT to wait: hold every user-account send
+      // until it expires. Bot-delivered groups are unaffected.
+      const accountHeld = q.isFloodGated(now());
+
       for (let index = 0; index < due.length; index += 1) {
         if (stopping) break;
         const group = due[index];
+
+        if (accountHeld && senderKindOf(group) === SENDER_USER) {
+          // Leave next_send_at alone: the queue's hold governs when it resumes.
+          summary.floodHeld += 1;
+          continue;
+        }
+
         const quiet = policy.resolveQuiet(q, group);
         const at = now();
 
@@ -66,7 +82,11 @@ function createScheduler({ q, broadcaster, config, logger = makeLogger('Schedule
         // eslint-disable-next-line no-await-in-loop
         const result = await broadcaster.deliver({ group, campaign, trigger: 'scheduled', scheduledFor });
 
-        if (result.status === 'migrated') {
+        if (result.status === 'deferred') {
+          // next_send_at was already set to exactly the wait Telegram asked
+          // for. Do not shorten or overwrite it.
+          summary.rateLimited += 1;
+        } else if (result.status === 'migrated') {
           const target = result.group;
           if (target) {
             q.updateGroup(target.chat_id, {
@@ -97,8 +117,11 @@ function createScheduler({ q, broadcaster, config, logger = makeLogger('Schedule
         }
       }
 
-      if (summary.sent || summary.failed || summary.deferred) {
-        logger.info(`tick: sent=${summary.sent} failed=${summary.failed} deferred=${summary.deferred} duplicate=${summary.duplicate}`);
+      if (summary.sent || summary.failed || summary.deferred || summary.rateLimited || summary.floodHeld) {
+        logger.info(
+          `tick: sent=${summary.sent} failed=${summary.failed} quiet-deferred=${summary.deferred}`
+          + ` rate-limited=${summary.rateLimited} flood-held=${summary.floodHeld} duplicate=${summary.duplicate}`
+        );
       }
       return summary;
     } finally {

@@ -13,6 +13,7 @@ function homeKeyboard() {
     [button('➕ Add Group', cb('g', 'add')), button('📝 Default Advertisement', cb('c', 'default'))],
     [button('⏱ Schedule', cb('s', 'interval')), button('🚀 Send Now', cb('n', 'home'))],
     [button('📊 Statistics', cb('st', 'home')), button('⚙️ Settings', cb('s', 'home'))],
+    [button('⚙️ Sender Account', cb('sndr', 'home'))],
   ];
 }
 
@@ -26,10 +27,18 @@ function buildDashboardText(ctx) {
   const timezone = policy.getTimezone(q, config);
   const problems = q.countProblemGroups();
 
+  const senderStatus = ctx.userSender ? ctx.userSender.getStatus() : null;
+  const senderLine = senderStatus
+    ? (senderStatus.connected
+      ? `🟢 Connected${senderStatus.account?.username ? ` (@${esc(senderStatus.account.username)})` : ''}`
+      : '🔴 Unavailable')
+    : '⚙️ Not configured';
+
   const lines = [
     '📢 <b>ACC STORE Advertiser</b>',
     '',
     `📊 Status: ${paused ? '⏸ Paused' : '🟢 Running'}`,
+    `👤 User sender: ${senderLine}`,
     `👥 Groups: ${groups} (${enabled} enabled)`,
     `📣 Campaigns: ${campaigns}`,
     `⏱ Default interval: ${formatInterval(interval)}`,
@@ -47,10 +56,20 @@ function buildStatusText(ctx) {
   const { q, config, scheduler, dbInfo } = ctx;
   const paused = q.isPaused();
   const schedulerStatus = scheduler ? scheduler.status() : { running: false };
+  const senderStatus = ctx.userSender ? ctx.userSender.getStatus() : null;
+  // Deliberately no session, api hash or phone number here.
+  const senderLine = senderStatus
+    ? (senderStatus.connected
+      ? `🟢 Connected${senderStatus.account?.username ? ` (@${esc(senderStatus.account.username)})` : ''}`
+      : `🔴 ${esc(senderStatus.reason || 'Unavailable')}`)
+    : '⚙️ Not configured';
+  const floodUntil = q.getFloodWaitUntil();
+
   return [
     '🤖 <b>Advertiser Status</b>',
     '',
     '🟢 Bot: Running',
+    `👤 User sender: ${senderLine}`,
     `📢 Auto Ads: ${paused ? '⏸ Paused' : '✅ Enabled'}`,
     `👥 Groups: ${q.countGroups()} (${q.countEnabledGroups()} enabled)`,
     `📣 Campaigns: ${q.countCampaigns()} (${q.countEnabledCampaigns()} active)`,
@@ -58,7 +77,8 @@ function buildStatusText(ctx) {
     `🌐 Timezone: ${esc(policy.getTimezone(q, config))}`,
     `🗄 Database: ${dbInfo?.persistent ? 'Persistent' : 'Ephemeral (no volume detected)'}`,
     `🕒 Scheduler: ${schedulerStatus.running ? 'Running' : 'Stopped'}`,
-  ].join('\n');
+    floodUntil && new Date(floodUntil) > new Date() ? `⏳ Rate limit hold until: ${esc(floodUntil)}` : null,
+  ].filter(Boolean).join('\n');
 }
 
 function register(ctx) {

@@ -6,12 +6,14 @@
   "scripts": {
     "start": "node index.js",
     "test": "node --test test/*.test.js",
-    "dev": "node --watch index.js"
+    "dev": "node --watch index.js",
+    "login:user": "node scripts/login.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
     "dotenv": "^16.4.5",
-    "node-telegram-bot-api": "^0.66.0"
+    "node-telegram-bot-api": "^0.66.0",
+    "teleproto": "^1.229.0"
   },
   "engines": {
     "node": ">=18.0.0"

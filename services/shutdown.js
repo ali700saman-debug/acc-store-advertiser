@@ -9,7 +9,7 @@
 const { closeDatabase } = require('../database/db');
 const { makeLogger } = require('../utils/logger');
 
-function createShutdown({ scheduler, bot, dbInfo, logger = makeLogger('Advertiser'), exit = (code) => process.exit(code) } = {}) {
+function createShutdown({ scheduler, bot, userSender = null, sendQueue = null, dbInfo, logger = makeLogger('Advertiser'), exit = (code) => process.exit(code) } = {}) {
   let shuttingDown = false;
 
   return async function shutdown(signal) {
@@ -24,14 +24,35 @@ function createShutdown({ scheduler, bot, dbInfo, logger = makeLogger('Advertise
       logger.error(`scheduler stop failed: ${error.message}`);
     }
 
-    // 2. Stop accepting new updates.
+    // 2. Drop anything still queued rather than sending it mid-shutdown.
+    try {
+      if (sendQueue) {
+        sendQueue.stop();
+        const dropped = sendQueue.clear('shutting down');
+        if (dropped) logger.info(`dropped ${dropped} queued send(s)`);
+      }
+    } catch (error) {
+      logger.error(`send queue stop failed: ${error.message}`);
+    }
+
+    // 3. Stop accepting new updates.
     try {
       if (bot && typeof bot.stopPolling === 'function') await bot.stopPolling({ cancel: true });
     } catch (error) {
       logger.error(`polling stop failed: ${error.message}`);
     }
 
-    // 3. Flush and close the database last, so in-flight writes land.
+    // 4. Close the MTProto connection cleanly.
+    try {
+      if (userSender) {
+        await userSender.disconnect();
+        logger.info('user sender disconnected');
+      }
+    } catch (error) {
+      logger.error(`user sender disconnect failed: ${error.message}`);
+    }
+
+    // 5. Flush and close the database last, so in-flight writes land.
     try {
       if (dbInfo?.db) closeDatabase(dbInfo.db);
       logger.info('database closed cleanly');

@@ -30,7 +30,7 @@ async function showGroupList(ctx, { chatId, messageId, page = 0 }) {
     return renderPanel(ctx, {
       chatId,
       messageId,
-      text: ['👥 <b>Groups</b>', '', 'No groups registered yet.', '', 'Add the bot to a group, then send <code>/register_group</code> there.'].join('\n'),
+      text: ['👥 <b>Groups</b>', '', 'No groups registered yet.', '', 'Import the groups your sender account is already in from ⚙️ Sender Account.'].join('\n'),
       keyboard: [[button('➕ How to add a group', cb('g', 'add'))], [button('⬅️ Back', cb('home', 'open'))]],
     });
   }
@@ -83,6 +83,7 @@ async function showGroupDetail(ctx, { chatId, messageId, targetChatId }) {
     '',
     `🆔 <code>${group.chat_id}</code>`,
     group.username ? `🔗 @${esc(group.username)}` : null,
+    `📤 Sender: ${group.sender_kind === 'user' ? '👤 User account' : '🤖 Bot'}`,
     `📊 Status: ${group.enabled ? 'Enabled' : 'Disabled'}`,
     `⏱ Interval: ${formatInterval(interval)}${group.interval_minutes ? '' : ' (default)'}`,
     `🕒 Last post: ${group.last_send_at ? formatClock(group.last_send_at, timezone) : '—'}`,
@@ -93,6 +94,12 @@ async function showGroupDetail(ctx, { chatId, messageId, targetChatId }) {
   ];
   if (group.delivery_problem) {
     lines.push('', `⚠️ Delivery problem: ${esc(group.last_error || 'unknown')}`);
+  } else if (group.last_error) {
+    // A rate-limit wait is not a fault; show it without the alarm.
+    lines.push('', `⏳ ${esc(group.last_error)}`);
+  }
+  if (group.sender_kind === 'user' && !group.access_hash && group.peer_type === 'channel') {
+    lines.push('', '⚠️ Missing peer data — re-import this group from ⚙️ Sender Account.');
   }
 
   const keyboard = [

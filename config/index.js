@@ -13,6 +13,10 @@ try {
 
 const DEFAULTS = {
   DB_PATH: '/data/advertiser.db',
+  USER_SEND_DELAY_MS: 20000,
+  FLOOD_WAIT_MARGIN_SECONDS: 5,
+  MAX_FLOOD_WAIT_SECONDS: 6 * 60 * 60,
+  USER_CONNECT_TIMEOUT_MS: 30000,
   DEFAULT_AD_INTERVAL_MINUTES: 360,
   MIN_INTERVAL_MINUTES: 60,
   TZ: 'Asia/Baghdad',
@@ -65,7 +69,30 @@ function build(env = process.env) {
     maxRetryAttempts: parseIntEnv(env.MAX_RETRY_ATTEMPTS, DEFAULTS.MAX_RETRY_ATTEMPTS),
     allowChannels: parseBoolEnv(env.ALLOW_CHANNELS, false),
     schedulerEnabled: parseBoolEnv(env.SCHEDULER_ENABLED, true),
+
+    // ---- MTProto user account (the account that actually posts the ads) ----
+    // These are credentials. They live only in memory, never in SQLite, and
+    // are registered with the logger so they cannot be printed by accident.
+    userApiId: parseIntEnv(env.TELEGRAM_API_ID, 0),
+    userApiHash: env.TELEGRAM_API_HASH || '',
+    userSession: env.TELEGRAM_USER_SESSION || '',
+    userSenderEnabled: parseBoolEnv(env.USER_SENDER_ENABLED, true),
+    userSendDelayMs: parseIntEnv(env.USER_SEND_DELAY_MS, DEFAULTS.USER_SEND_DELAY_MS),
+    userConnectTimeoutMs: parseIntEnv(env.USER_CONNECT_TIMEOUT_MS, DEFAULTS.USER_CONNECT_TIMEOUT_MS),
+    floodWaitMarginSeconds: parseIntEnv(env.FLOOD_WAIT_MARGIN_SECONDS, DEFAULTS.FLOOD_WAIT_MARGIN_SECONDS),
+    maxFloodWaitSeconds: parseIntEnv(env.MAX_FLOOD_WAIT_SECONDS, DEFAULTS.MAX_FLOOD_WAIT_SECONDS),
+    mediaDir: env.MEDIA_DIR || '',
   };
+}
+
+/** True when all three MTProto credentials are present. */
+function hasUserCredentials(config) {
+  return Boolean(config.userApiId && config.userApiHash && config.userSession);
+}
+
+/** Every secret value, for registration with the logger's redactor. */
+function secretValues(config) {
+  return [config.botToken, config.userApiHash, config.userSession].filter((v) => typeof v === 'string' && v.length >= 8);
 }
 
 /**
@@ -82,9 +109,25 @@ function validate(config) {
   return problems;
 }
 
+/**
+ * Problems that disable the MTProto sender but must NOT stop the admin bot
+ * from booting. Never echoes any credential value.
+ */
+function validateUserSender(config) {
+  const problems = [];
+  if (!config.userSenderEnabled) return ['USER_SENDER_ENABLED is false.'];
+  if (!config.userApiId) problems.push('TELEGRAM_API_ID is missing.');
+  if (!config.userApiHash) problems.push('TELEGRAM_API_HASH is missing.');
+  if (!config.userSession) problems.push('TELEGRAM_USER_SESSION is missing.');
+  return problems;
+}
+
 module.exports = build();
 module.exports.build = build;
 module.exports.validate = validate;
+module.exports.validateUserSender = validateUserSender;
+module.exports.hasUserCredentials = hasUserCredentials;
+module.exports.secretValues = secretValues;
 module.exports.parseAdminIds = parseAdminIds;
 module.exports.parseBoolEnv = parseBoolEnv;
 module.exports.DEFAULTS = DEFAULTS;

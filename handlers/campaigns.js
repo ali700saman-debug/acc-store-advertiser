@@ -10,6 +10,8 @@ const { renderPanel, esc, paginate, pagerRow, campaignLabel } = require('./commo
 const { validateTelegramHtml, lengthLimitFor, truncate, validateUrl } = require('../utils/html');
 const { formatDateTime } = require('../utils/time');
 const policy = require('../services/policy');
+const { renderCampaign, previewNote, SENDER_USER, SENDER_BOT } = require('../services/render');
+const { resolveStoreUrl } = require('../database/seed');
 
 const LANGUAGES = ['en', 'ar', 'vi', 'es', 'ckb', 'mixed'];
 
@@ -146,14 +148,46 @@ async function showLanguageMenu(ctx, { chatId, messageId, campaignId }) {
 }
 
 /**
- * Renders the campaign exactly as groups will see it, through the same send
- * path used for real broadcasts.
+ * Which delivery channel a preview should imitate by default: the user
+ * account when that is what actually posts, otherwise the bot.
  */
-async function sendPreview(ctx, { chatId, campaign, header = '👁 <b>Preview</b>' }) {
-  await ctx.bot.sendMessage(chatId, header, { parse_mode: 'HTML' });
+function defaultPreviewSender(ctx) {
+  if (ctx.q.countGroupsBySender('user') > 0) return SENDER_USER;
+  if (ctx.q.countGroupsBySender('bot') > 0) return SENDER_BOT;
+  return ctx.userSender && ctx.userSender.getStatus().connected ? SENDER_USER : SENDER_BOT;
+}
+
+/**
+ * Shows the campaign exactly as the chosen sender will deliver it.
+ *
+ * The preview itself is always delivered by the bot (that is the admin panel),
+ * but the CONTENT is rendered for the target sender — so a user-account
+ * preview shows the appended link and no inline button, which is what the
+ * group will actually receive.
+ */
+async function sendPreview(ctx, { chatId, campaign, header = '👁 <b>Preview</b>', senderKind = null }) {
+  const kind = senderKind || defaultPreviewSender(ctx);
+  const plan = renderCampaign(campaign, { senderKind: kind, storeUrl: resolveStoreUrl(ctx.q, ctx.config) });
+
+  if (!plan.ok) {
+    await ctx.bot.sendMessage(chatId, '⚠️ This campaign has neither text nor media.', { parse_mode: 'HTML' });
+    return { ok: false, error: plan.error };
+  }
+
+  const label = kind === SENDER_USER ? '👤 as the USER ACCOUNT' : '🤖 as the BOT';
+  await ctx.bot.sendMessage(chatId, `${header} — ${label}`, { parse_mode: 'HTML' });
+
   try {
-    await ctx.telegram.sendCampaign(chatId, campaign);
-    return { ok: true };
+    await ctx.telegram.sendPlan(chatId, plan);
+    const other = kind === SENDER_USER ? SENDER_BOT : SENDER_USER;
+    await ctx.bot.sendMessage(chatId, `<i>${esc(previewNote(kind))}</i>`, {
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: [[button(
+        other === SENDER_USER ? '👤 Preview as user account' : '🤖 Preview as bot',
+        cb('c', 'prev', campaign.id, other)
+      )]] },
+    });
+    return { ok: true, senderKind: kind };
   } catch (error) {
     const info = error.classified || {};
     await ctx.bot.sendMessage(chatId, `⚠️ Preview failed: ${esc(info.friendly || error.message)}`, { parse_mode: 'HTML' });

@@ -19,7 +19,10 @@ const { createTelegramService } = require('./services/telegram');
 const { createBroadcaster } = require('./services/broadcaster');
 const { createScheduler } = require('./services/scheduler');
 const { createShutdown, install: installShutdown } = require('./services/shutdown');
-const { makeLogger } = require('./utils/logger');
+const { createUserSender } = require('./services/userSender');
+const { createSendQueue } = require('./services/sendQueue');
+const { createMediaStore } = require('./services/mediaStore');
+const { makeLogger, registerSecrets } = require('./utils/logger');
 
 const startHandler = require('./handlers/start');
 const groupsHandler = require('./handlers/groups');
@@ -31,11 +34,27 @@ const log = makeLogger('Advertiser');
  * Builds the whole application graph. `bot` is injectable so tests can run
  * the real handlers against a stub instead of the Telegram API.
  */
-function createApp({ bot, config: appConfig = config, dbInfo, logger = log } = {}) {
+/**
+ * Builds the whole application graph.
+ *
+ * `bot` and `createClient` are injectable so tests can run the real handlers
+ * against stubs instead of the Telegram APIs.
+ */
+function createApp({ bot, config: appConfig = config, dbInfo, logger = log, createClient = undefined, userSender: injectedUserSender = null } = {}) {
   const q = createQueries(dbInfo.db);
   const sessions = createSessions();
   const telegram = createTelegramService({ bot, logger: makeLogger('Telegram'), maxRetryAttempts: appConfig.maxRetryAttempts });
-  const broadcaster = createBroadcaster({ q, telegram, config: appConfig, logger: makeLogger('Broadcaster') });
+
+  // The MTProto user account: what actually posts the advertisements.
+  const userSender = injectedUserSender
+    || createUserSender({ config: appConfig, logger: makeLogger('User Sender'), ...(createClient ? { createClient } : {}) });
+  const sendQueue = createSendQueue({ q, config: appConfig, logger: makeLogger('Send Queue') });
+  const mediaStore = createMediaStore({ bot, config: appConfig, q, logger: makeLogger('Media') });
+
+  const broadcaster = createBroadcaster({
+    q, telegram, userSender, sendQueue, mediaStore,
+    config: appConfig, logger: makeLogger('Broadcaster'),
+  });
 
   const ctx = {
     bot,
@@ -43,11 +62,15 @@ function createApp({ bot, config: appConfig = config, dbInfo, logger = log } = {
     config: appConfig,
     sessions,
     telegram,
+    userSender,
+    sendQueue,
+    mediaStore,
     broadcaster,
     logger,
     dbInfo,
     botInfo: null,
     scheduler: null,
+    senderCache: {},
   };
 
   ctx.scheduler = createScheduler({ q, broadcaster, config: appConfig, logger: makeLogger('Scheduler') });
@@ -61,6 +84,10 @@ function createApp({ bot, config: appConfig = config, dbInfo, logger = log } = {
 
 async function main() {
   log.info('starting');
+
+  // Register every secret with the logger BEFORE anything else can log, so a
+  // token, api hash or session can never be printed even by accident.
+  registerSecrets(config.secretValues(config));
 
   const problems = config.validate(config);
   if (problems.length) {
@@ -95,20 +122,37 @@ async function main() {
   await bot.startPolling();
   try {
     ctx.botInfo = await bot.getMe();
-    log.info(`connected as @${ctx.botInfo.username}`);
+    log.info(`admin bot connected as @${ctx.botInfo.username}`);
   } catch (error) {
     log.warn(`could not fetch bot identity: ${error.message}`);
+  }
+
+  // Connect the user account. A missing or revoked session must NEVER stop the
+  // admin panel: the failure is reported here and shown in ⚙️ Sender Account.
+  const senderLog = makeLogger('User Sender');
+  try {
+    const senderStatus = await ctx.userSender.connect();
+    if (!senderStatus.connected) {
+      senderLog.warn(`unavailable — ${senderStatus.reason || senderStatus.status}`);
+      senderLog.warn('admin bot continues; fix it from the panel or regenerate with npm run login:user');
+    }
+  } catch (error) {
+    // connect() already swallows its own errors; this is belt and braces.
+    senderLog.warn(`unavailable — ${error.message}`);
   }
 
   if (config.schedulerEnabled) scheduler.start();
   else makeLogger('Scheduler').warn('disabled via SCHEDULER_ENABLED=false');
 
-  makeLogger('Groups').info(`${q.countGroups()} registered (${q.countEnabledGroups()} enabled)`);
+  makeLogger('Groups').info(
+    `${q.countGroups()} registered (${q.countEnabledGroups()} enabled)`
+    + ` — ${q.countGroupsBySender('user')} via user account, ${q.countGroupsBySender('bot')} via bot`
+  );
   makeLogger('Campaigns').info(`${q.countEnabledCampaigns()} active`);
   makeLogger('Admins').info(`${config.adminIds.length} authorised admin id(s)`);
   if (q.isPaused()) log.warn('automatic advertising is currently PAUSED');
 
-  const shutdown = createShutdown({ scheduler, bot, dbInfo, logger: log });
+  const shutdown = createShutdown({ scheduler, bot, userSender: ctx.userSender, sendQueue: ctx.sendQueue, dbInfo, logger: log });
   installShutdown(shutdown, { logger: log });
 
   return ctx;
